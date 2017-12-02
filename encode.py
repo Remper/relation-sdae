@@ -4,7 +4,7 @@ import argparse
 import tensorflow as tf
 from tensorflow.contrib import layers, rnn
 
-import sae
+import rsdae
 from config import ModelConfig
 from util.data_generator import DataGenerator
 
@@ -47,7 +47,7 @@ def main():
                             activation_fn=None, scope=output_scope)
 
             rnn_cell = rnn.GRUBlockCell(config.sentence_dim)
-            sent_vec = sae.encode(
+            sent_vec = rsdae.encode(
                 cell=rnn_cell, embeddings=embeddings,
                 inputs=inputs, inputs_length=inputs_length, scope='encoder')
 
