@@ -1,6 +1,7 @@
 """Sequential autoencoder implementation."""
 import tensorflow as tf
 from tensorflow.contrib import seq2seq
+from tensorflow.python.layers.core import Dense
 
 
 class RSDAE(object):
@@ -11,10 +12,13 @@ class RSDAE(object):
             embeddings: An Embeddings object
         """
 
-        self.embeddings = embeddings.emb_variable
+        self.embeddings = embeddings
         self.vocabulary_size = len(embeddings)
         self.cell = cell
         self.time_major = time_major
+
+    def get_output_layer(self):
+        return Dense(self.vocabulary_size, use_bias=False, name="decoder-output")
 
     def encode(self, inputs, inputs_length, scope='encoder'):
         """
@@ -43,7 +47,7 @@ class RSDAE(object):
         return sent_vec
 
     def _lookup(self, inputs):
-        return tf.nn.embedding_lookup(self.embeddings, inputs)
+        return tf.nn.embedding_lookup(self.embeddings.emb_variable, inputs)
 
     def decode_train(self, encoder_state, targets, targets_length, scope='decoder'):
         """
@@ -57,8 +61,6 @@ class RSDAE(object):
                 contains the length of each sample in a batch
             scope: A VariableScope object of a string which indicates
                 the scope
-            reuse: A boolean value or None which specifies whether to
-                reuse variables already defined in the scope
 
         Returns:
             decoder_outputs, which is a float32
@@ -68,17 +70,14 @@ class RSDAE(object):
 
         with tf.variable_scope(scope, initializer=tf.orthogonal_initializer()):
             helper = seq2seq.TrainingHelper(self._lookup(targets), targets_length, time_major=self.time_major)
-            decoder = seq2seq.BasicDecoder(self.cell, helper, encoder_state)
+            decoder = seq2seq.BasicDecoder(self.cell, helper, encoder_state, output_layer=self.get_output_layer())
             outputs, _, _ = seq2seq.dynamic_decode(decoder, output_time_major=self.time_major)
-            decoder = tf.layers.dense(outputs.rnn_output, self.vocabulary_size, use_bias=False)
-        return decoder
+        return outputs.rnn_output, outputs.sample_id
 
     def loss(self, decoder_outputs, targets, targets_length):
         """
         Args:
             decoder_outputs: A return value of decode_train function
-            output_fn: A function that projects a vector with length
-                cell.output_size into a vector with length vocab_size
             targets: A int32 tensor with shape (batch, max_len), which
                 contains word indices
             targets_length: A int32 tensor with shape (batch,), which
@@ -99,43 +98,25 @@ class RSDAE(object):
             dtype=tf.float32)
         return tf.reduce_sum(losses * losses_mask) / tf.reduce_sum(losses_mask)
 
-    def decode_inference(self, encoder_state, output_fn, vocab_size,
-                         bos_id, eos_id, max_length, scope='decoder', reuse=None):
+    def decode_inference(self, encoder_state, scope='decoder-inference'):
         """
         Args:
-            cell: An RNNCell object
-            embeddings: An embedding matrix with shape
-                (vocab_size, word_dim)
             encoder_state: A tensor that contains the encoder state;
                 its shape should match that of cell.zero_state
-            output_fn: A function that projects a vector with length
-                cell.output_size into a vector with length vocab_size;
-                please beware of the scope, since it will be called inside
-                'scope/rnn' scope
-            vocab_size: The size of a vocabulary set
-            bos_id: The ID of the beginning-of-sentence symbol
-            eos_id: The ID of the end-of-sentence symbol
-            max_length: The maximum length of a generated sentence;
-                it stops generating words when this number of words are
-                generated and <EOS> is not appeared till then
             scope: A VariableScope object of a string which indicates
                 the scope
-            reuse: A boolean value or None which specifies whether to
-                reuse variables already defined in the scope
 
         Returns:
             generated, which is a float32 (batch, <=max_len)
             tensor that contains IDs of generated words
         """
 
-        with tf.variable_scope(scope, initializer=tf.orthogonal_initializer(),
-                               reuse=reuse):
-            decoder_fn = seq2seq.simple_decoder_fn_inference(
-                output_fn=output_fn, encoder_state=encoder_state,
-                embeddings=self.embeddings, start_of_sequence_id=bos_id,
-                end_of_sequence_id=eos_id, maximum_length=max_length,
-                num_decoder_symbols=vocab_size)
-            generated_logits, _, _ = seq2seq.dynamic_rnn_decoder(
-                cell=self.cell, decoder_fn=decoder_fn, time_major=False, scope='rnn')
-        generated = tf.argmax(generated_logits, axis=2)
-        return generated
+        with tf.variable_scope(scope, initializer=tf.orthogonal_initializer()):
+            helper = seq2seq.GreedyEmbeddingHelper(
+                self._lookup,
+                tf.fill([tf.shape(encoder_state)[0]], self.embeddings.bos),
+                self.embeddings.eos
+            )
+            decoder = seq2seq.BasicDecoder(self.cell, helper, encoder_state, output_layer=self.get_output_layer())
+            outputs, _, _ = seq2seq.dynamic_decode(decoder, maximum_iterations=64)
+            return outputs.sample_id

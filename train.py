@@ -2,16 +2,15 @@
 import argparse
 import os
 from time import time
-from datetime import datetime
 
 import tensorflow as tf
-from tensorflow.contrib import layers, rnn, slim
+from tensorflow.contrib import rnn, slim
 from tensorflow.contrib.framework import get_or_create_global_step
 
 from rsdae import RSDAE
 from util.rsdae_data_generator import RSDAEDataGenerator
 from util.embeddings import Embeddings
-
+from util.evaluation import VRDEvaluation
 
 logging = tf.logging
 logging.set_verbosity(logging.INFO)
@@ -25,13 +24,16 @@ def main():
     batch_size = args.batch_size
     max_epoch = args.max_epoch
     sentence_dim = args.sentence_dim
+    #evaluation_path = args.evaluation
+
+    logging.info("Initialised with parameters: %s" % vars(args))
 
     # Check the existence of needed directories
-    if not os.path.exists(input_path) or not os.path.exists(embeddings_path):
-        logging.error("Input or embeddings paths are incorrect")
-        return
     if not os.path.exists(output_path):
         os.makedirs(output_path)
+
+    # Load evaluation dataset
+    #evaluation_dataset = VRDEvaluation.from_directory(evaluation_path)
 
     with tf.Graph().as_default() as graph:
         with tf.Session() as sess:
@@ -41,6 +43,8 @@ def main():
             else:
                 logging.info("Loading embeddings")
                 embeddings = Embeddings.restore_from_embeddings(embeddings_path)
+
+            #resolved_evaluation_dataset = evaluation_dataset.resolve_against_dict(embeddings)
 
             logging.info('Initializing the data generator')
             data_generator = RSDAEDataGenerator(embeddings=embeddings, input_path=input_path, batch_size=batch_size,
@@ -63,8 +67,9 @@ def main():
 
             # Coupling together computation graph
             encoder_state = rsdae.encode(inputs=inputs, inputs_length=inputs_length, scope='encoder')
-            decoder_outputs = rsdae.decode_train(encoder_state=encoder_state, targets=targets[:, :-1],
+            decoder_outputs, decoder_ids = rsdae.decode_train(encoder_state=encoder_state, targets=targets[:, :-1],
                                                  targets_length=targets_length - 1, scope='decoder')
+            inference_outputs = rsdae.decode_inference(encoder_state=encoder_state)
             '''generated = rsdae.decode_inference(
                 encoder_state=encoder_state, output_fn=output_fn,
                 vocab_size=len(embeddings),
@@ -95,17 +100,38 @@ def main():
             saver = tf.train.Saver(max_to_keep=20)
 
             logging.info('Starting training')
+            REPORT = 100
+            timestamp = time()
             for data_batch in data_generator:
                 (inputs_v, inputs_length_v,
                  targets_v, targets_length_v) = data_batch
-                summary_v, global_step_v, _ = sess.run(
-                    fetches=[summary, global_step, train_op],
+                summary_v, global_step_v, decoder_ids_v, _ = sess.run(
+                    fetches=[summary, global_step, decoder_ids, train_op],
                     feed_dict={inputs: inputs_v,
                                inputs_length: inputs_length_v,
                                targets: targets_v,
                                targets_length: targets_length_v})
                 summary_writer.add_summary(summary=summary_v,
                                            global_step=global_step_v)
+
+                if global_step_v % REPORT == 0:
+                    sample_output = sess.run(
+                        fetches=[inference_outputs],
+                        feed_dict={inputs: inputs_v,
+                                   inputs_length: inputs_length_v})
+
+                    elapsed = time() - timestamp
+                    print("-" * 60)
+                    print("Iter %d, Epoch %.0f, Time per iter %.2fs" % (global_step_v, data_generator.progress, elapsed / REPORT))
+                    print("  Input: %s" % " ".join([embeddings.inv_dictionary[ele] for ele in inputs_v[0, :inputs_length_v[0]]]))
+                    print()
+                    print("  Training output: %s" % " ".join([embeddings.inv_dictionary[ele] for ele in decoder_ids_v[0, :]]))
+                    print()
+                    print("  Inference output: %s" % " ".join([embeddings.inv_dictionary[ele] for ele in sample_output[0][0, :]]))
+                    print()
+                    print("  Target: %s" % " ".join([embeddings.inv_dictionary[ele] for ele in targets_v[0, :targets_length_v[0]]]))
+                    print("-" * 60)
+                    timestamp = time()
 
                 '''
                 if global_step_v % 100 == 0:
@@ -142,7 +168,7 @@ def main():
                 '''
 
                 # Checkpointing
-                if global_step_v % 500 == 0:
+                if global_step_v % 1000 == 0:
                     save_path = os.path.join(output_path, 'model.ckpt')
                     real_save_path = saver.save(sess=sess, save_path=save_path,
                                                 global_step=global_step_v)
@@ -160,12 +186,14 @@ if __name__ == '__main__':
                         help='The file with dictionary to start with randomly initialised embeddings')
     parser.add_argument('--output', required=True,
                         help='The directory where to save the output')
-    parser.add_argument('--batch-size', type=int, default=64,
+    parser.add_argument('--batch-size', type=int, default=128,
                         help='The size of a mini-batch')
     parser.add_argument('--max-epoch', type=int, default=5,
                         help='The maximum epoch number')
     parser.add_argument('--sentence-dim', type=int, default=300,
                         help='The dimension of a sentence representation')
+    parser.add_argument('--evaluation', required=False,
+                        help='Path to the evaluation file')
 
     args = parser.parse_args()
     main()

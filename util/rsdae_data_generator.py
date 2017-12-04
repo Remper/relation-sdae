@@ -1,5 +1,6 @@
 import tensorflow as tf
 import gzip
+from time import time
 from random import choice
 import numpy as np
 
@@ -19,7 +20,6 @@ class RSDAEDataGenerator:
         self._reader = None
         self._open_reader()
         self._epoch = 0
-        self._progress_in_epoch = 0
 
     def _open_reader(self):
         return gzip.open(self.input_path, 'rt', encoding="utf-8")
@@ -38,7 +38,7 @@ class RSDAEDataGenerator:
 
     @property
     def progress(self):
-        return self._epoch + self._progress_in_epoch
+        return self._epoch
 
     def map_words(self, word):
         word = word.split('@')
@@ -72,28 +72,20 @@ class RSDAEDataGenerator:
 
         for sentence in batch:
             cur_len = len(sentence)
-            if cur_len > self.max_sent_size:
-                cur_len = self.max_sent_size
             if max_length < cur_len:
                 max_length = cur_len
 
             lengths.append(cur_len)
         lengths = np.array(lengths)
 
-        modified_batch = []
-        for sentence in batch:
-            cur_len = len(sentence)
-            if cur_len > self.max_sent_size:
-                sentence = sentence[:self.max_sent_size]
-
-            modified_batch.append(sentence + [0]*(max_length - cur_len))
-
-        return np.array(modified_batch), lengths
+        return np.array([sentence + [0]*(max_length - len(sentence)) for sentence in batch]), lengths
 
     def __iter__(self):
+        # timestamp = time()
         for self._epoch in range(self.max_epoch):
             with self._open_reader() as reader:
                 batch = []
+                replacements = []
                 for raw_line in reader:
                     raw_line = raw_line.strip()
                     if len(raw_line) == 0:
@@ -111,15 +103,24 @@ class RSDAEDataGenerator:
                         if pos in self._noun_pos_tags:
                             nouns.append(len(words))
                         words.append(id)
+                        if len(words) >= self.max_sent_size:
+                            break
                     if len(nouns) > 0:
-                        words[choice(nouns)] = self.embeddings.noun
+                        replacement = choice(nouns)
+                        replacements.append((len(batch), replacement, words[replacement]))
+                        words[replacement] = self.embeddings.noun
                     batch.append(words)
 
                     if len(batch) == self.batch_size:
                         inputs, inputs_length = self.prepare_batch(batch)
                         targets, targets_length = self.pad_batch(inputs, inputs_length)
+                        for row, col, word in replacements:
+                            targets[row][col+1] = word
+                        # print("Batch preparation time: %.3fs" % (time() - timestamp))
                         yield inputs, inputs_length, targets, targets_length
+                        # timestamp = time()
                         batch = []
+                        replacements = []
 
     def sample(self, num_samples):
         sample_inds = np.random.permutation(len(self.data))[:num_samples]
