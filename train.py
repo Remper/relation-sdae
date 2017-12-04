@@ -24,6 +24,7 @@ def main():
     batch_size = args.batch_size
     max_epoch = args.max_epoch
     sentence_dim = args.sentence_dim
+    report_period = args.report
     #evaluation_path = args.evaluation
 
     logging.info("Initialised with parameters: %s" % vars(args))
@@ -48,7 +49,7 @@ def main():
 
             logging.info('Initializing the data generator')
             data_generator = RSDAEDataGenerator(embeddings=embeddings, input_path=input_path, batch_size=batch_size,
-                                                max_epoch=max_epoch)
+                                                report_period=report_period, max_epoch=max_epoch)
 
             logging.info('Building the model...')
             # Placeholders
@@ -100,7 +101,6 @@ def main():
             saver = tf.train.Saver(max_to_keep=20)
 
             logging.info('Starting training')
-            REPORT = 100
             timestamp = time()
             for data_batch in data_generator:
                 (inputs_v, inputs_length_v,
@@ -114,7 +114,7 @@ def main():
                 summary_writer.add_summary(summary=summary_v,
                                            global_step=global_step_v)
 
-                if global_step_v % REPORT == 0:
+                if global_step_v % report_period == 0:
                     sample_output = sess.run(
                         fetches=[inference_outputs],
                         feed_dict={inputs: inputs_v,
@@ -122,7 +122,7 @@ def main():
 
                     elapsed = time() - timestamp
                     print("-" * 60)
-                    print("Iter %d, Epoch %.0f, Time per iter %.2fs" % (global_step_v, data_generator.progress, elapsed / REPORT))
+                    print("Iter %d, Epoch %.0f, Time per iter %.2fs" % (global_step_v, data_generator.progress, elapsed / report_period))
                     print("  Input: %s" % " ".join([embeddings.inv_dictionary[ele] for ele in inputs_v[0, :inputs_length_v[0]]]))
                     print()
                     print("  Training output: %s" % " ".join([embeddings.inv_dictionary[ele] for ele in decoder_ids_v[0, :]]))
@@ -194,6 +194,8 @@ if __name__ == '__main__':
                         help='The dimension of a sentence representation')
     parser.add_argument('--evaluation', required=False,
                         help='Path to the evaluation file')
+    parser.add_argument('--report', type=int, default=100, required=False,
+                        help='Report every n iterations')
 
     args = parser.parse_args()
     main()

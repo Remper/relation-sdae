@@ -16,9 +16,12 @@ class RSDAE(object):
         self.vocabulary_size = len(embeddings)
         self.cell = cell
         self.time_major = time_major
+        self._output_layer = None
 
     def get_output_layer(self):
-        return Dense(self.vocabulary_size, use_bias=False, name="decoder-output")
+        if self._output_layer is None:
+            self._output_layer = Dense(self.vocabulary_size, use_bias=False, name="decoder-output")
+        return self._output_layer
 
     def encode(self, inputs, inputs_length, scope='encoder'):
         """
