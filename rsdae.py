@@ -44,10 +44,10 @@ class RSDAE(object):
         """
 
         with tf.variable_scope(scope, initializer=tf.orthogonal_initializer()):
-            _, sent_vec = tf.nn.dynamic_rnn(
-                cell=self.cell, inputs=self._lookup(inputs), sequence_length=inputs_length,
+            bi_outputs, encoder_state = tf.nn.bidirectional_dynamic_rnn(
+                self.cell[0], self.cell[1], inputs=self._lookup(inputs), sequence_length=inputs_length,
                 dtype=tf.float32, time_major=self.time_major)
-        return sent_vec
+            return tf.concat([lstm.c for lstm in encoder_state], -1)
 
     def _lookup(self, inputs):
         return tf.nn.embedding_lookup(self.embeddings.emb_variable, inputs)
@@ -77,7 +77,23 @@ class RSDAE(object):
             outputs, _, _ = seq2seq.dynamic_decode(decoder, output_time_major=self.time_major)
         return outputs.rnn_output, outputs.sample_id
 
-    def loss(self, decoder_outputs, targets, targets_length):
+    def decode_token(self, encoder_state, layers=1, scope='decoder-token'):
+        with tf.variable_scope(scope):
+            output = encoder_state
+            assert layers > 0
+            for i in range(layers-1):
+                with tf.variable_scope("dense-%d" % i):
+                    output = tf.layers.dense(output, self.embeddings.dims, activation=tf.tanh)
+                    #output = tf.nn.dropout(output, keep_prob=0.8)
+
+            return tf.layers.dense(output, self.vocabulary_size, use_bias=False, name="dense-linear")
+
+    def loss_token(self, decoder_outputs, targets, scope="loss"):
+        with tf.variable_scope(scope):
+            losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=targets, logits=decoder_outputs)
+            return tf.reduce_mean(losses)
+
+    def loss_seq2seq(self, decoder_outputs, targets, targets_length):
         """
         Args:
             decoder_outputs: A return value of decode_train function
